@@ -17,7 +17,7 @@ export function sampleField(field: Float32Array, x: number, y: number): number {
 }
 
 /** Distribute a deposit continuously across neighboring cells. */
-export function depositField(field: Float32Array, x: number, y: number, amount: number): void {
+export function depositField(field: Float32Array, x: number, y: number, amount: number, blocked?: Uint8Array): void {
   const gx = Math.max(0, Math.min(COLS - 1, x / CELL - 0.5));
   const gy = Math.max(0, Math.min(ROWS - 1, y / CELL - 0.5));
   const col = Math.floor(gx), row = Math.floor(gy);
@@ -25,6 +25,7 @@ export function depositField(field: Float32Array, x: number, y: number, amount: 
   for (let dy = 0; dy <= 1; dy++) {
     for (let dx = 0; dx <= 1; dx++) {
       const index = Math.min(row + dy, ROWS - 1) * COLS + Math.min(col + dx, COLS - 1);
+      if (blocked?.[index]) continue;
       const weight = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy);
       field[index] = Math.min(12, field[index] + amount * weight);
     }

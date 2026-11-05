@@ -1,4 +1,5 @@
-import { HEIGHT, WIDTH, World } from '../simulation/world';
+import { CELL, COLS, HEIGHT, WIDTH, World } from '../simulation/world';
+import { Terrain } from '../simulation/terrain';
 import { TrailRaster } from './trails';
 
 export class Renderer {
@@ -8,10 +9,14 @@ export class Renderer {
   private readonly trailImage: ImageData;
   private readonly trailRaster = new TrailRaster();
   private readonly observer: ResizeObserver;
+  private readonly terrainCanvas = document.createElement('canvas');
+  private cachedTerrain: Terrain | null = null;
   pointer: { x: number; y: number } | null = null;
 
   constructor(readonly canvas: HTMLCanvasElement) {
     this.context = canvas.getContext('2d')!;
+    this.terrainCanvas.width = WIDTH;
+    this.terrainCanvas.height = HEIGHT;
     this.trailCanvas.width = this.trailRaster.width;
     this.trailCanvas.height = this.trailRaster.height;
     this.trailContext = this.trailCanvas.getContext('2d')!;
@@ -53,6 +58,18 @@ export class Renderer {
       ctx.drawImage(this.trailCanvas, 0, 0, WIDTH, HEIGHT);
     }
 
+    if (this.cachedTerrain !== world.terrain) {
+      const terrainContext = this.terrainCanvas.getContext('2d')!;
+      terrainContext.clearRect(0, 0, WIDTH, HEIGHT);
+      terrainContext.fillStyle = '#b9b9b9';
+      for (let i = 0; i < world.terrain.blocked.length; i++) {
+        if (world.terrain.blocked[i]) terrainContext.fillRect(i % COLS * CELL, Math.floor(i / COLS) * CELL, CELL, CELL);
+      }
+      this.cachedTerrain = world.terrain;
+    }
+    // Solid terrain masks the trail overlay as well as blocking physical movement.
+    ctx.drawImage(this.terrainCanvas, 0, 0);
+
     for (const patch of world.food) {
       const radius = 9 + Math.min(8, Math.sqrt(patch.amount) * 0.65);
       ctx.fillStyle = '#4e8b42';
@@ -73,7 +90,8 @@ export class Renderer {
     }
     if (this.pointer) {
       const p = this.pointer;
-      ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
+      ctx.strokeStyle = world.terrain.canStand(p.x, p.y, 18) && Math.hypot(p.x - nest.x, p.y - nest.y) >= 38 ? '#888' : '#a32d1c';
+      ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, Math.PI * 2); ctx.stroke();
     }
   }

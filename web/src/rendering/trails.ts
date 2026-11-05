@@ -50,7 +50,7 @@ export class TrailRaster {
         const top = this.blurred[topRow + left] * (1 - fx) + this.blurred[topRow + right] * fx;
         const bottom = this.blurred[bottomRow + left] * (1 - fx) + this.blurred[bottomRow + right] * fx;
         const density = top * (1 - fy) + bottom * fy;
-        this.pixels[(y * this.width + x) * 4 + 3] = 150 * (1 - Math.exp(-density * 0.8));
+        this.pixels[(y * this.width + x) * 4 + 3] = 180 * (1 - Math.exp(-density * 0.3));
       }
     }
   }

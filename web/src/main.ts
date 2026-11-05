@@ -7,6 +7,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="controls" aria-label="Simulation controls">
       <button id="pause" aria-label="Pause simulation">Pause</button>
       <button id="reset">New colony</button>
+      <button id="new-map">New map</button>
       <label>Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
       <label><input id="trails" type="checkbox" checked /> Trails</label>
       <div class="stats" aria-label="Colony statistics">
@@ -22,7 +23,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div class="settings-inputs">
         <label>Trail half-life <input id="evaporation" type="range" min="5" max="60" value="22" /> <output id="evaporation-label">22 s</output></label>
         <label>Starting ants <input id="initial-population" type="range" min="12" max="120" step="4" value="48" /> <output id="initial-label">48</output></label>
-        <label>Seed <input id="seed" type="number" min="0" max="4294967295" step="1" value="1847" required /></label>
+        <label>Map seed <input id="seed" type="number" min="0" max="4294967295" step="1" value="1847" required /></label>
         <span>Starting ants and seed apply to a new colony. Limit: ${MAX_POPULATION} ants.</span>
       </div>
     </details>
@@ -31,12 +32,12 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     </div>
     <div class="status-line">
       <span id="world-message" aria-live="polite">Click to add food (+${FOOD_PER_CLICK}).</span>
-      <span>Black: worker · Orange: carrying food · Green: food / trails</span>
+      <span>Black: worker · Orange: carrying food · Green: food / trails (darker = stronger) · Gray: obstacle</span>
     </div>
   </main>
   <dialog id="reset-dialog"><form method="dialog">
-    <p>Start a new colony? This clears all ants, food, and trails.</p>
-    <div class="dialog-actions"><button value="cancel">Cancel</button><button value="reset">New colony</button></div>
+    <p id="reset-message">Start a new colony? This clears all ants, food, and trails.</p>
+    <div class="dialog-actions"><button value="cancel">Cancel</button><button id="confirm-reset" value="reset">New colony</button></div>
   </form></dialog>
 `;
 
@@ -51,6 +52,7 @@ let previousTime = 0;
 let previousUI = 0;
 let messageUntil = 0;
 let pausedBeforeReset = false;
+let generateNewMap = false;
 const trails = element<HTMLInputElement>('trails');
 const pauseButton = element<HTMLButtonElement>('pause');
 const resetDialog = element<HTMLDialogElement>('reset-dialog');
@@ -85,14 +87,28 @@ function startNewColony(): void {
   messageUntil = 0;
   updateUI();
 }
-element('reset').addEventListener('click', () => {
+function requestReset(newMap: boolean): void {
   pausedBeforeReset = paused;
+  generateNewMap = newMap;
   setPause(true);
+  element('reset-message').textContent = newMap
+    ? 'Generate a new map? This starts a new colony and clears all ants, food, and trails.'
+    : 'Start a new colony on this seed? This clears all ants, food, and trails.';
+  element('confirm-reset').textContent = newMap ? 'New map' : 'New colony';
   resetDialog.returnValue = '';
   resetDialog.showModal();
-});
+}
+element('reset').addEventListener('click', () => requestReset(false));
+element('new-map').addEventListener('click', () => requestReset(true));
 resetDialog.addEventListener('close', () => {
-  if (resetDialog.returnValue === 'reset') startNewColony();
+  if (resetDialog.returnValue === 'reset') {
+    if (generateNewMap) {
+      let seed = crypto.getRandomValues(new Uint32Array(1))[0];
+      if (seed === world.seed) seed = (seed + 1) >>> 0;
+      seedInput.value = String(seed);
+    }
+    startNewColony();
+  }
   else setPause(pausedBeforeReset);
 });
 
@@ -104,7 +120,7 @@ function placeFood(x: number, y: number): void {
   if (x < 0 || x > WIDTH || y < 0 || y > HEIGHT) return;
   if (world.addFood(x, y)) {
     announce(world.extinct ? 'Colony extinct. Food cannot revive it.' : `Added ${FOOD_PER_CLICK} food.`);
-  } else announce('Place food away from the nest. Maximum 128 patches.');
+  } else announce('Place food in open space, away from obstacles and the nest. Maximum 128 patches.');
 }
 canvas.addEventListener('pointermove', event => {
   if (event.pointerType !== 'touch') renderer.pointer = renderer.coordinates(event.clientX, event.clientY);
