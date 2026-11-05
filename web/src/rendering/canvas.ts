@@ -1,19 +1,21 @@
-import { CELL, COLS, HEIGHT, ROWS, WIDTH, World } from '../simulation/world';
+import { HEIGHT, WIDTH, World } from '../simulation/world';
+import { TrailRaster } from './trails';
 
 export class Renderer {
   private readonly context: CanvasRenderingContext2D;
   private readonly trailCanvas = document.createElement('canvas');
   private readonly trailContext: CanvasRenderingContext2D;
   private readonly trailImage: ImageData;
+  private readonly trailRaster = new TrailRaster();
   private readonly observer: ResizeObserver;
   pointer: { x: number; y: number } | null = null;
 
   constructor(readonly canvas: HTMLCanvasElement) {
     this.context = canvas.getContext('2d')!;
-    this.trailCanvas.width = COLS;
-    this.trailCanvas.height = ROWS;
+    this.trailCanvas.width = this.trailRaster.width;
+    this.trailCanvas.height = this.trailRaster.height;
     this.trailContext = this.trailCanvas.getContext('2d')!;
-    this.trailImage = this.trailContext.createImageData(COLS, ROWS);
+    this.trailImage = new ImageData(this.trailRaster.pixels, this.trailRaster.width, this.trailRaster.height);
     this.observer = new ResizeObserver(() => {
       const rect = canvas.getBoundingClientRect();
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
@@ -44,15 +46,11 @@ export class Renderer {
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
     if (showTrails) {
-      const data = this.trailImage.data;
-      for (let i = 0; i < world.pheromone.length; i++) {
-        const base = i * 4;
-        data[base] = 126; data[base + 1] = 152; data[base + 2] = 76;
-        data[base + 3] = Math.min(150, world.pheromone[i] * 58);
-      }
+      this.trailRaster.update(world.pheromone);
       this.trailContext.putImageData(this.trailImage, 0, 0);
       ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(this.trailCanvas, 0, 0, COLS * CELL, ROWS * CELL);
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(this.trailCanvas, 0, 0, WIDTH, HEIGHT);
     }
 
     for (const patch of world.food) {

@@ -1,11 +1,10 @@
+import { COLS, HEIGHT, ROWS, WIDTH, depositField, sampleField } from './field';
+export { CELL, COLS, HEIGHT, ROWS, WIDTH } from './field';
+
 export const STEP = 1 / 30;
-export const WIDTH = 1000;
-export const HEIGHT = 640;
-export const CELL = 8;
-export const COLS = WIDTH / CELL;
-export const ROWS = HEIGHT / CELL;
 export const MAX_POPULATION = 350;
 export const FOOD_PER_CLICK = 80;
+const DIRECTIONS = 24;
 
 export interface Ant {
   x: number;
@@ -14,6 +13,11 @@ export interface Ant {
   carrying: boolean;
   decisionIn: number;
   returnTime: number;
+  scout: boolean;
+  returning: boolean;
+  searchTime: number;
+  searchLimit: number;
+  outboundAngle: number;
 }
 
 export interface Food { x: number; y: number; amount: number }
@@ -51,6 +55,8 @@ export class World {
   halfLife = 22;
   private birthClock = 0;
   private deathClock = 0;
+  private spawned = 0;
+  private readonly failedDirections = new Float32Array(DIRECTIONS);
 
   constructor(readonly seed = 1847, readonly initialPopulation = 48) {
     this.random = new Random(seed);
@@ -60,13 +66,55 @@ export class World {
   }
 
   private spawn(): void {
-    const angle = this.random.next() * Math.PI * 2;
+    const scout = this.spawned++ % 8 === 0;
+    const angle = this.departureAngle(scout);
     const radius = this.random.next() * 14;
     this.ants.push({
       x: this.nest.x + Math.cos(angle) * radius,
       y: this.nest.y + Math.sin(angle) * radius,
       angle, carrying: false, decisionIn: this.random.next() * 0.18, returnTime: 0,
+      scout, returning: false, searchTime: 0,
+      searchLimit: this.searchBudget(scout), outboundAngle: angle,
     });
+  }
+
+  private searchBudget(scout: boolean): number {
+    return scout ? 45 + this.random.next() * 20 : 14 + this.random.next() * 6;
+  }
+
+  private directionIndex(angle: number): number {
+    const turn = Math.PI * 2;
+    return Math.floor(((angle % turn + turn) % turn) / turn * DIRECTIONS) % DIRECTIONS;
+  }
+
+  private departureAngle(scout: boolean): number {
+    const weights = Array.from({ length: DIRECTIONS }, (_, sector) => {
+      const angle = (sector + 0.5) / DIRECTIONS * Math.PI * 2;
+      let trail = 0;
+      for (const distance of [40, 70, 100]) {
+        trail += sampleField(this.pheromone,
+          this.nest.x + Math.cos(angle) * distance,
+          this.nest.y + Math.sin(angle) * distance);
+      }
+      // Scouts keep exploring; workers strongly favor locally advertised routes.
+      return scout ? 1 : (0.2 + trail * 16) / (1 + this.failedDirections[sector] * 3);
+    });
+    let choice = this.random.next() * weights.reduce((a, b) => a + b, 0);
+    let sector = DIRECTIONS - 1;
+    for (let i = 0; i < weights.length; i++) {
+      choice -= weights[i];
+      if (choice <= 0) { sector = i; break; }
+    }
+    return (sector + this.random.next()) / DIRECTIONS * Math.PI * 2;
+  }
+
+  private beginTrip(ant: Ant): void {
+    ant.returning = false;
+    ant.searchTime = 0;
+    ant.searchLimit = this.searchBudget(ant.scout);
+    ant.angle = this.departureAngle(ant.scout);
+    ant.outboundAngle = ant.angle;
+    ant.decisionIn = 0;
   }
 
   addFood(x: number, y: number): boolean {
@@ -83,31 +131,26 @@ export class World {
     return true;
   }
 
-  private index(x: number, y: number): number {
-    const col = Math.max(0, Math.min(COLS - 1, Math.floor(x / CELL)));
-    const row = Math.max(0, Math.min(ROWS - 1, Math.floor(y / CELL)));
-    return row * COLS + col;
-  }
-
   private turn(ant: Ant): void {
     // Ants smell food only nearby; distant patches are discovered by exploration.
-    const nearby = this.food.find(p => Math.hypot(p.x - ant.x, p.y - ant.y) < 65);
+    const nearby = this.food.find(p => p.amount > 0 && Math.hypot(p.x - ant.x, p.y - ant.y) < 65);
     if (nearby) {
       ant.angle = Math.atan2(nearby.y - ant.y, nearby.x - ant.x);
       return;
     }
-    const offsets = [-0.8, -0.4, 0, 0.4, 0.8];
+    const offsets = ant.scout ? [-0.4, -0.2, 0, 0.2, 0.4] : [-0.8, -0.4, 0, 0.4, 0.8];
     const weights = offsets.map(offset => {
       const direction = ant.angle + offset;
       const x = ant.x + Math.cos(direction) * 24;
       const y = ant.y + Math.sin(direction) * 24;
       const trail = Math.hypot(x - this.nest.x, y - this.nest.y) > 28
-        ? this.pheromone[this.index(x, y)] : 0;
-      return 0.35 + (offset === 0 ? 0.65 : 0) + Math.pow(trail, 1.4) * 3;
+        ? sampleField(this.pheromone, x, y) : 0;
+      return 0.35 + (offset === 0 ? 0.65 : 0)
+        + (ant.scout ? Math.sqrt(trail) * 0.4 : Math.pow(trail, 1.4) * 3);
     });
     // Occasional independent exploration prevents a strong trail locking every ant in.
-    if (this.random.next() < 0.1) {
-      ant.angle += (this.random.next() - 0.5) * 1.8;
+    if (this.random.next() < (ant.scout ? 0.1 : 0.025)) {
+      ant.angle += (this.random.next() - 0.5) * (ant.scout ? 0.8 : 1.8);
       return;
     }
     let choice = this.random.next() * weights.reduce((a, b) => a + b, 0);
@@ -124,16 +167,26 @@ export class World {
     for (let i = 0; i < this.pheromone.length; i++) {
       this.pheromone[i] *= fade;
     }
+    const failureFade = Math.pow(0.5, STEP / 40);
+    for (let i = 0; i < this.failedDirections.length; i++) this.failedDirections[i] *= failureFade;
     if (this.extinct) return;
 
     for (const ant of this.ants) {
+      if (!ant.carrying && !ant.returning) {
+        ant.searchTime += STEP;
+        if (ant.searchTime >= ant.searchLimit) {
+          ant.returning = true;
+          const sector = this.directionIndex(ant.outboundAngle);
+          this.failedDirections[sector] = Math.min(8, this.failedDirections[sector] + 1);
+        }
+      }
       if (ant.carrying) {
         ant.returnTime += STEP;
-        ant.angle = Math.atan2(this.nest.y - ant.y, this.nest.x - ant.x);
-        const index = this.index(ant.x, ant.y);
         // The signal is strongest near the discovered food and fades on the way home.
-        this.pheromone[index] = Math.min(12,
-          this.pheromone[index] + STEP * 18 * Math.exp(-ant.returnTime / 18));
+        depositField(this.pheromone, ant.x, ant.y, STEP * 24 * Math.exp(-ant.returnTime / 18));
+      }
+      if (ant.carrying || ant.returning) {
+        ant.angle = Math.atan2(this.nest.y - ant.y, this.nest.x - ant.x);
       } else {
         ant.decisionIn -= STEP;
         if (ant.decisionIn <= 0) {
@@ -141,7 +194,7 @@ export class World {
           ant.decisionIn = 0.18;
         }
       }
-      const speed = ant.carrying ? 45 : 40;
+      const speed = ant.carrying || ant.returning ? 45 : 40;
       ant.x += Math.cos(ant.angle) * speed * STEP;
       ant.y += Math.sin(ant.angle) * speed * STEP;
       if (ant.x < 4 || ant.x > WIDTH - 4) {
@@ -152,12 +205,16 @@ export class World {
         ant.angle = -ant.angle;
         ant.y = Math.max(4, Math.min(HEIGHT - 4, ant.y));
       }
-      if (ant.carrying) {
+      if (ant.carrying || ant.returning) {
         if (Math.hypot(ant.x - this.nest.x, ant.y - this.nest.y) < 17) {
-          ant.carrying = false;
-          this.reserve++;
-          this.delivered++;
-          ant.angle += Math.PI + (this.random.next() - 0.5) * 0.5;
+          if (ant.carrying) {
+            ant.carrying = false;
+            this.reserve++;
+            this.delivered++;
+            const sector = this.directionIndex(ant.outboundAngle);
+            this.failedDirections[sector] *= 0.5;
+          }
+          this.beginTrip(ant);
         }
       } else {
         const patch = this.food.find(p => p.amount > 0 && Math.hypot(p.x - ant.x, p.y - ant.y) < 14);

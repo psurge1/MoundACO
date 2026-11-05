@@ -114,3 +114,64 @@ test('food placement rejects the nest and non-finite input, merges close patches
   assert.equal(world.food.length, 128);
   checkFoodBalance(world);
 });
+
+test('an unsuccessful worker returns home without depositing a false food trail', () => {
+  const world = new World();
+  const worker = world.ants.find(ant => !ant.scout)!;
+  worker.x = 80; worker.y = 320;
+  worker.searchTime = worker.searchLimit;
+  world.step();
+  assert.ok(worker.returning);
+  assert.ok(!worker.carrying);
+  assert.ok(worker.x > 80, 'the worker should head back toward the nest');
+  advance(world, 11);
+  assert.ok(!worker.returning, 'the worker should start a new trip after reaching the nest');
+  assert.ok(worker.searchTime < 3);
+  assert.ok(world.pheromone.every(value => value === 0), 'empty returns must not advertise food');
+  assert.equal(world.delivered, 0);
+  checkFoodBalance(world);
+});
+
+test('a small scout group retains a longer exploration budget', () => {
+  const world = new World();
+  const scouts = world.ants.filter(ant => ant.scout);
+  assert.equal(scouts.length, 6);
+  assert.ok(scouts.every(ant => ant.searchLimit >= 45 && ant.searchLimit <= 65));
+  assert.ok(world.ants.filter(ant => !ant.scout).every(ant => ant.searchLimit >= 14 && ant.searchLimit <= 20));
+});
+
+test('workers recruit to discovered food rather than accumulating on the empty side', () => {
+  for (const seed of [1847, 42, 17]) {
+    const world = new World(seed);
+    for (let i = 0; i < 20; i++) world.addFood(720, 320);
+    advance(world, 60);
+    let emptySide = 0, samples = 0;
+    for (let i = 0; i < 60 / STEP; i++) {
+      world.step();
+      emptySide += world.ants.filter(ant => ant.x < 400).length;
+      samples += world.ants.length;
+    }
+    assert.ok(emptySide / samples < 0.15, `seed ${seed}: most ants should leave the empty side`);
+    assert.ok(world.delivered > 300, `seed ${seed}: recruitment should sustain deliveries`);
+    checkFoodBalance(world);
+  }
+});
+
+test('scouting still discovers distant food and adapts after a source is exhausted', () => {
+  for (const seed of [1847, 42, 17]) {
+    const world = new World(seed);
+    world.addFood(900, 100);
+    advance(world, 120);
+    assert.ok(world.delivered > 0, `seed ${seed}: distant food should still be discovered`);
+    for (let i = 0; i < 60 / STEP && world.food.length; i++) world.step();
+    assert.equal(world.food.length, 0, 'the original source should be exhausted');
+    advance(world, 15); // Finish delivering food already being carried from the old source.
+    checkFoodBalance(world);
+    world.addFood(180, 500);
+    const previous = world.delivered;
+    advance(world, 120);
+    assert.ok(world.delivered > previous + 5, `seed ${seed}: workers should discover the replacement source`);
+    assert.ok(world.food.reduce((sum, patch) => sum + patch.amount, 0) < FOOD_PER_CLICK);
+    checkFoodBalance(world);
+  }
+});
