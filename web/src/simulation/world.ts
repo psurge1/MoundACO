@@ -1,7 +1,8 @@
 import { CELL, COLS, HEIGHT, ROWS, WIDTH, depositField, sampleField } from './field';
 import { Random } from './random';
 import { Terrain } from './terrain';
-import { RouteMemory, routeReward } from './route';
+import { RouteMemory } from './route';
+import { ENERGY_RECOVERY_PER_SECOND, MAX_ENERGY, energySpeed, movementEnergy } from './energy';
 export { Random } from './random';
 export { CELL, COLS, HEIGHT, ROWS, WIDTH } from './field';
 
@@ -16,7 +17,6 @@ export interface Ant {
   angle: number;
   carrying: boolean;
   decisionIn: number;
-  returnTime: number;
   scout: boolean;
   returning: boolean;
   searchTime: number;
@@ -25,8 +25,10 @@ export interface Ant {
   homeTarget: { x: number; y: number } | null;
   route: RouteMemory;
   returnIndex: number;
-  routeQuality: number;
   trailExtended: boolean;
+  energy: number;
+  resting: boolean;
+  tripDistance: number;
 }
 
 export interface Food { x: number; y: number; amount: number }
@@ -50,6 +52,11 @@ export class World {
   extinct = false;
   starvationTime = 0;
   halfLife = 22;
+  energyEnabled = true;
+  energyUsed = 0;
+  distanceTravelled = 0;
+  deliveryDistance = 0;
+  restSeconds = 0;
   private birthClock = 0;
   private deathClock = 0;
   private spawned = 0;
@@ -72,12 +79,13 @@ export class World {
     route.record(x, y, this.terrain, true);
     this.ants.push({
       x, y,
-      angle, carrying: false, decisionIn: this.random.next() * 0.18, returnTime: 0,
+      angle, carrying: false, decisionIn: this.random.next() * 0.18,
       scout, returning: false, searchTime: 0,
       searchLimit: this.searchBudget(scout), outboundAngle: angle,
       homeTarget: null,
-      route, returnIndex: -1, routeQuality: 0,
+      route, returnIndex: -1,
       trailExtended: false,
+      energy: MAX_ENERGY, resting: false, tripDistance: 0,
     });
   }
 
@@ -119,7 +127,8 @@ export class World {
     ant.route = new RouteMemory(this.nest.x, this.nest.y);
     ant.route.record(ant.x, ant.y, this.terrain, true);
     ant.returnIndex = -1;
-    ant.routeQuality = 0;
+    ant.resting = false;
+    ant.tripDistance = 0;
     ant.trailExtended = false;
     ant.searchTime = 0;
     ant.searchLimit = this.searchBudget(ant.scout);
@@ -205,6 +214,13 @@ export class World {
     if (this.extinct) return;
 
     for (const ant of this.ants) {
+      if (!this.energyEnabled) ant.energy = MAX_ENERGY;
+      if (ant.resting) {
+        this.restSeconds += STEP;
+        ant.energy = Math.min(MAX_ENERGY, ant.energy + ENERGY_RECOVERY_PER_SECOND * STEP);
+        if (ant.energy >= MAX_ENERGY) this.beginTrip(ant);
+        continue;
+      }
       if (!ant.carrying && !ant.returning) {
         ant.searchTime += STEP;
         if (!ant.scout && !ant.trailExtended && Math.hypot(ant.x - this.nest.x, ant.y - this.nest.y) > 60
@@ -222,12 +238,6 @@ export class World {
           this.failedDirections[sector] = Math.min(8, this.failedDirections[sector] + 1);
         }
       }
-      if (ant.carrying) {
-        ant.returnTime += STEP;
-        // Reward the route this ant actually discovered, rather than an oracle's route.
-        depositField(this.pheromone, ant.x, ant.y,
-          STEP * 40 * ant.routeQuality * Math.exp(-ant.returnTime / 45), this.terrain.blocked);
-      }
       if (ant.carrying || ant.returning) {
         while (ant.returnIndex > 0 && Math.hypot(ant.x - ant.route.points[ant.returnIndex].x,
           ant.y - ant.route.points[ant.returnIndex].y) < 0.001) ant.returnIndex--;
@@ -240,11 +250,24 @@ export class World {
           ant.decisionIn = 0.18;
         }
       }
-      const speed = ant.carrying ? 45 : ant.returning ? 55 : 40;
+      const baseSpeed = ant.carrying ? 45 : ant.returning ? 55 : 40;
+      const speed = baseSpeed * (this.energyEnabled ? energySpeed(ant.energy) : 1);
       const distance = ant.homeTarget ? Math.min(speed * STEP, Math.hypot(ant.x - ant.homeTarget.x, ant.y - ant.homeTarget.y)) : speed * STEP;
       const x = ant.x + Math.cos(ant.angle) * distance;
       const y = ant.y + Math.sin(ant.angle) * distance;
       if (this.terrain.canStand(x, y)) {
+        const travelled = Math.hypot(x - ant.x, y - ant.y);
+        ant.tripDistance += travelled;
+        this.distanceTravelled += travelled;
+        if (this.energyEnabled) {
+          const cost = Math.min(ant.energy, movementEnergy(travelled, ant.carrying));
+          ant.energy -= cost;
+          this.energyUsed += cost;
+        }
+        if (ant.carrying) {
+          // Every carrier lays the same signal per unit actually walked. No route score.
+          depositField(this.pheromone, ant.x, ant.y, travelled * 0.6, this.terrain.blocked);
+        }
         if (!ant.carrying && !ant.returning) {
           const last = ant.route.points[ant.route.points.length - 1];
           // Preserve a bend before a sampled breadcrumb would cut across a wall.
@@ -264,10 +287,15 @@ export class World {
             ant.carrying = false;
             this.reserve++;
             this.delivered++;
+            this.deliveryDistance += ant.tripDistance;
             const sector = this.directionIndex(ant.outboundAngle);
             this.failedDirections[sector] *= 0.5;
           }
-          this.beginTrip(ant);
+          if (this.energyEnabled && ant.energy < MAX_ENERGY) {
+            ant.returning = false;
+            ant.homeTarget = null;
+            ant.resting = true;
+          } else this.beginTrip(ant);
         }
       } else {
         const patch = this.food.find(p => p.amount > 0 && Math.hypot(p.x - ant.x, p.y - ant.y) < 14
@@ -276,10 +304,8 @@ export class World {
           patch.amount--;
           ant.carrying = true;
           ant.homeTarget = null;
-          ant.returnTime = 0;
           ant.route.record(ant.x, ant.y, this.terrain, true);
           ant.returnIndex = ant.route.points.length - 1;
-          ant.routeQuality = routeReward(ant.route.length);
         }
       }
     }

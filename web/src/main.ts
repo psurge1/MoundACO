@@ -10,10 +10,12 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <button id="new-map">New map</button>
       <label>Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
       <label><input id="trails" type="checkbox" checked /> Trails</label>
+      <label title="Toggle energy use, fatigue, and recovery time."><input id="energy-cost" type="checkbox" checked /> Energy</label>
       <div class="stats" aria-label="Colony statistics">
         <span>Ants: <output id="population">48</output></span>
         <span>Food: <output id="reserve">36.0</output></span>
         <span>Delivered: <output id="delivered">0</output></span>
+        <span title="Average ant energy. Longer trips require more rest at the nest.">Energy: <output id="energy">100%</output></span>
         <span id="session-status" role="status">Exploring</span>
         <span id="clock">00:00</span>
       </div>
@@ -32,7 +34,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     </div>
     <div class="status-line">
       <span id="world-message" aria-live="polite">Click to add food (+${FOOD_PER_CLICK}).</span>
-      <span>Black: worker · Orange: carrying food · Green: food / trails (darker = stronger) · Gray: obstacle</span>
+      <span>Teal: colony (nest, ants, trails) · Green: food / carried food · Brown: obstacle · Darker trails = stronger</span>
     </div>
   </main>
   <dialog id="reset-dialog"><form method="dialog">
@@ -59,6 +61,7 @@ const resetDialog = element<HTMLDialogElement>('reset-dialog');
 const seedInput = element<HTMLInputElement>('seed');
 const initialInput = element<HTMLInputElement>('initial-population');
 const evaporation = element<HTMLInputElement>('evaporation');
+const energyCost = element<HTMLInputElement>('energy-cost');
 const cursor = { x: WIDTH * 0.7, y: HEIGHT * 0.5 };
 
 function setPause(value: boolean): void {
@@ -76,11 +79,13 @@ evaporation.addEventListener('input', () => {
   element('evaporation-label').textContent = `${evaporation.value} s`;
 });
 initialInput.addEventListener('input', () => { element('initial-label').textContent = initialInput.value; });
+energyCost.addEventListener('change', () => { world.energyEnabled = energyCost.checked; updateUI(); });
 
 function startNewColony(): void {
   if (!seedInput.reportValidity()) return;
   world = new World(Number(seedInput.value), Number(initialInput.value));
   world.halfLife = Number(evaporation.value);
+  world.energyEnabled = energyCost.checked;
   setPause(false);
   accumulator = 0;
   element('world-message').textContent = `Click to add food (+${FOOD_PER_CLICK}).`;
@@ -151,6 +156,8 @@ function updateUI(): void {
   element('population').textContent = String(world.ants.length);
   element('reserve').textContent = world.reserve.toFixed(1);
   element('delivered').textContent = String(world.delivered);
+  const meanEnergy = world.ants.length ? world.ants.reduce((sum, ant) => sum + ant.energy, 0) / world.ants.length : 0;
+  element('energy').textContent = world.energyEnabled ? `${Math.round(meanEnergy)}%` : 'off';
   element('session-status').textContent = world.status[0].toUpperCase() + world.status.slice(1);
   element('session-status').dataset.status = world.status;
   if (world.extinct) element('world-message').textContent = 'Colony extinct. Use New colony to start again.';

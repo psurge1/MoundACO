@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, COLS, ROWS } from '../src/simulation/field.ts';
-import { RouteMemory, routeReward } from '../src/simulation/route.ts';
+import { RouteMemory } from '../src/simulation/route.ts';
 import { Terrain } from '../src/simulation/terrain.ts';
 import { STEP, World } from '../src/simulation/world.ts';
 
@@ -34,7 +34,6 @@ test('food carriers advertise the discovered detour without consulting the short
   }
   ant.x = 780; ant.y = 320; ant.carrying = true;
   ant.returnIndex = ant.route.points.length - 1;
-  ant.routeQuality = routeReward(ant.route.length);
   terrain.homeWaypoint = () => { throw new Error('A food carrier must not ask for an optimal return'); };
   let crossedLongBranch = false;
   for (let i = 0; i < 40 / STEP && ant.carrying; i++) {
@@ -86,15 +85,15 @@ test('empty returners also retrace their own detour without advertising food', (
   assert.ok(world.pheromone.every(value => value === 0));
 });
 
-test('a longer route can lead initially before a discovered shorter competitor becomes stronger', () => {
+test('competing routes develop without assigned quality scores and an efficient branch can become stronger', () => {
   const world = new World(5, 80, forkTerrain());
   world.reserve += 164;
   world.supplied += 164;
   for (let i = 0; i < 100; i++) world.addFood(780, 320);
-  // Neither branch starts with pheromone, and the initially discovered branch is the long one.
+  // Neither branch starts with pheromone; both must be discovered through movement.
   assert.equal(branchSignal(world, 8, 17) + branchSignal(world, 54, 63), 0);
   for (let i = 0; i < 120 / STEP; i++) world.step();
-  assert.ok(branchSignal(world, 8, 17) > branchSignal(world, 54, 63));
+  assert.ok(branchSignal(world, 8, 17) > 0);
   assert.ok(branchSignal(world, 54, 63) > 0, 'both independently discovered branches should be visible');
   for (let i = 0; i < 300 / STEP; i++) world.step();
   let longer = 0, shorter = 0;

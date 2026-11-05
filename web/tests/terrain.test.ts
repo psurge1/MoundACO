@@ -3,7 +3,7 @@ import test from 'node:test';
 import { CELL, COLS, HEIGHT, ROWS, WIDTH } from '../src/simulation/field.ts';
 import { Terrain } from '../src/simulation/terrain.ts';
 import { STEP, World } from '../src/simulation/world.ts';
-import { RouteMemory, routeReward } from '../src/simulation/route.ts';
+import { RouteMemory } from '../src/simulation/route.ts';
 
 /** Independent flood fill: don't use the navigation field to verify the generator. */
 function reachableCount(terrain: Terrain): number {
@@ -63,7 +63,6 @@ test('returners escape a concave obstacle and deliver food without crossing wall
     ant.route.record(x, y, terrain, true);
   }
   ant.returnIndex = ant.route.points.length - 1;
-  ant.routeQuality = routeReward(ant.route.length);
   assert.ok(!terrain.lineClear(ant.x, ant.y, world.nest.x, world.nest.y));
   let escapedLeft = false;
   for (let i = 0; i < 40 / STEP && ant.carrying; i++) {

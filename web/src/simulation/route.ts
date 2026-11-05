@@ -52,8 +52,3 @@ export class RouteMemory {
     return length;
   }
 }
-
-/** Quality uses the discovered route, with no knowledge of the globally shortest route. */
-export function routeReward(length: number): number {
-  return Math.max(0.1, Math.min(1, Math.pow(400 / Math.max(1, length), 1.5)));
-}
