@@ -23,24 +23,25 @@ export class Renderer {
     this.observer.observe(canvas);
   }
 
-  coordinates(clientX: number, clientY: number): { x: number; y: number } {
+  coordinates(clientX: number, clientY: number): { x: number; y: number } | null {
     const rect = this.canvas.getBoundingClientRect();
-    return { x: (clientX - rect.left) / rect.width * WIDTH, y: (clientY - rect.top) / rect.height * HEIGHT };
+    const scale = Math.min(rect.width / WIDTH, rect.height / HEIGHT);
+    const x = (clientX - rect.left - (rect.width - WIDTH * scale) / 2) / scale;
+    const y = (clientY - rect.top - (rect.height - HEIGHT * scale) / 2) / scale;
+    return x >= 0 && x <= WIDTH && y >= 0 && y <= HEIGHT ? { x, y } : null;
   }
 
   draw(world: World, showTrails: boolean): void {
     const ctx = this.context;
-    ctx.setTransform(this.canvas.width / WIDTH, 0, 0, this.canvas.height / HEIGHT, 0, 0);
-    ctx.fillStyle = '#eaece1';
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    const scale = Math.min(this.canvas.width / WIDTH, this.canvas.height / HEIGHT);
+    const offsetX = (this.canvas.width - WIDTH * scale) / 2;
+    const offsetY = (this.canvas.height - HEIGHT * scale) / 2;
+    ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+    ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
-
-    // A quiet reference grid, rather than illustrated scenery.
-    ctx.fillStyle = '#cbd0bc';
-    for (let x = 20; x < WIDTH; x += 28) {
-      for (let y = 12; y < HEIGHT; y += 28) {
-        ctx.beginPath(); ctx.arc(x, y, 0.7, 0, Math.PI * 2); ctx.fill();
-      }
-    }
 
     if (showTrails) {
       const data = this.trailImage.data;
@@ -56,42 +57,26 @@ export class Renderer {
 
     for (const patch of world.food) {
       const radius = 9 + Math.min(8, Math.sqrt(patch.amount) * 0.65);
-      ctx.strokeStyle = '#a1ae83'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(patch.x, patch.y, radius + 6, 0, Math.PI * 2); ctx.stroke();
-      ctx.fillStyle = '#769448';
+      ctx.fillStyle = '#4e8b42';
       ctx.beginPath(); ctx.arc(patch.x, patch.y, radius, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#eff2df';
-      for (const [dx, dy] of [[-4, -3], [4, -2], [0, 4]]) {
-        ctx.beginPath(); ctx.arc(patch.x + dx, patch.y + dy, 1.8, 0, Math.PI * 2); ctx.fill();
-      }
-      ctx.fillStyle = '#526240'; ctx.textAlign = 'center'; ctx.font = '11px monospace';
-      ctx.fillText(String(patch.amount), patch.x, patch.y + radius + 21);
+      ctx.fillStyle = '#555'; ctx.textAlign = 'center'; ctx.font = '11px monospace';
+      ctx.fillText(String(patch.amount), patch.x, patch.y + radius + 15);
     }
 
     const nest = world.nest;
-    ctx.strokeStyle = world.extinct ? '#aaa99c' : '#b6ac96';
-    ctx.lineWidth = 1;
-    for (const radius of [25, 32]) {
-      ctx.beginPath(); ctx.arc(nest.x, nest.y, radius, 0, Math.PI * 2); ctx.stroke();
-    }
-    ctx.fillStyle = world.extinct ? '#a09d91' : '#827158';
+    ctx.fillStyle = world.extinct ? '#ccc' : '#888';
     ctx.beginPath(); ctx.arc(nest.x, nest.y, 18, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = world.extinct ? '#77766c' : '#4e4436';
-    ctx.beginPath(); ctx.arc(nest.x, nest.y, 9, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#797564'; ctx.textAlign = 'center'; ctx.font = '10px monospace';
-    ctx.fillText(world.extinct ? 'EMPTY NEST' : 'THE NEST', nest.x, nest.y + 49);
+    ctx.fillStyle = '#666'; ctx.textAlign = 'center'; ctx.font = '11px monospace';
+    ctx.fillText(world.extinct ? 'empty nest' : 'nest', nest.x, nest.y + 34);
 
     for (const ant of world.ants) {
-      ctx.fillStyle = ant.carrying ? '#a77835' : '#374234';
+      ctx.fillStyle = ant.carrying ? '#c47720' : '#222';
       ctx.beginPath(); ctx.arc(ant.x, ant.y, ant.carrying ? 2.3 : 1.8, 0, Math.PI * 2); ctx.fill();
     }
     if (this.pointer) {
       const p = this.pointer;
-      ctx.strokeStyle = '#758463'; ctx.setLineDash([3, 4]);
-      ctx.beginPath(); ctx.arc(p.x, p.y, 21, 0, Math.PI * 2); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#586a43'; ctx.font = '11px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('+ food', p.x, p.y - 30);
+      ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, Math.PI * 2); ctx.stroke();
     }
   }
 }
