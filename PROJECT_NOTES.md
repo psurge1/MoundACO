@@ -626,3 +626,6 @@ Each phase should leave a usable simulation. Avoid committing to later mechanics
 - User confirmed the remote was configured and pushed. Verified origin is git@github.com:psurge1/MoundACO.git, default branch main, repository public, with Pages not yet enabled and no workflow runs.
 - Found the Pages workflow and Vite configuration were still untracked locally and absent from the pushed commit. Completing the setup requires committing/pushing these files and enabling workflow-based Pages publishing.
 - Verified the five pinned action revisions against their official GitHub releases through the API; they match checkout v7.0.1, setup-node v7.1.0, configure-pages v6.0.0, upload-pages-artifact v5.0.0, deploy-pages v5.0.1.
+
+- Completed: enabled Pages with workflow publishing and HTTPS, committed the setup as 5d6f3dc, and pushed main. GitHub Actions run 42317157546 succeeded (build/test and deploy); all 49 tests passed in CI.
+- Verified live URL https://psurge1.github.io/MoundACO/ returns HTTP 200 with the expected title, and its JavaScript and stylesheet both return HTTP 200 with correct content types. README and AGENTS now record the published site.

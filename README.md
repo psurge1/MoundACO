@@ -25,6 +25,8 @@ npm run preview
 
 ## Deploy to GitHub Pages
 
+Live simulation: [psurge1.github.io/MoundACO](https://psurge1.github.io/MoundACO/).
+
 The workflow in [.github/workflows/pages.yml](.github/workflows/pages.yml) tests and builds the app on pull requests and pushes to `main`. Successful pushes to `main` deploy only `web/dist` to GitHub Pages. It uses Node.js 24 and the checked-in npm lockfile; no personal access token or deployment dependency is needed.
 
 1. Push this repository, including the workflow, to `main` on [psurge1/MoundACO](https://github.com/psurge1/MoundACO).
