@@ -1,28 +1,30 @@
 import { CELL, COLS, HEIGHT, WIDTH, World } from '../simulation/world';
+import { Sandbox } from '../simulation/sandbox';
 import { Terrain } from '../simulation/terrain';
 import { TrailRaster } from './trails';
-import { defaultColonyPalette, palette, type ColonyPalette } from './palette';
+import { colonyPalette, defaultColonyPalette, palette, type ColonyPalette } from './palette';
+
+interface TrailLayer {
+  world: World;
+  raster: TrailRaster;
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  image: ImageData;
+}
 
 export class Renderer {
   private readonly context: CanvasRenderingContext2D;
-  private readonly trailCanvas = document.createElement('canvas');
-  private readonly trailContext: CanvasRenderingContext2D;
-  private readonly trailImage: ImageData;
-  private readonly trailRaster: TrailRaster;
+  private readonly trailLayers = new Map<number, TrailLayer>();
+  placingNest = false;
   private readonly observer: ResizeObserver;
   private readonly terrainCanvas = document.createElement('canvas');
   private cachedTerrain: Terrain | null = null;
   pointer: { x: number; y: number } | null = null;
 
   constructor(readonly canvas: HTMLCanvasElement, private readonly colors: ColonyPalette = defaultColonyPalette) {
-    this.trailRaster = new TrailRaster(colors);
     this.context = canvas.getContext('2d')!;
     this.terrainCanvas.width = WIDTH;
     this.terrainCanvas.height = HEIGHT;
-    this.trailCanvas.width = this.trailRaster.width;
-    this.trailCanvas.height = this.trailRaster.height;
-    this.trailContext = this.trailCanvas.getContext('2d')!;
-    this.trailImage = new ImageData(this.trailRaster.pixels, this.trailRaster.width, this.trailRaster.height);
     this.observer = new ResizeObserver(() => {
       const rect = canvas.getBoundingClientRect();
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
@@ -40,7 +42,7 @@ export class Renderer {
     return x >= 0 && x <= WIDTH && y >= 0 && y <= HEIGHT ? { x, y } : null;
   }
 
-  draw(world: World, showTrails: boolean): void {
+  draw(world: World | Sandbox, showTrails: boolean): void {
     const ctx = this.context;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = palette.outside;
@@ -52,12 +54,25 @@ export class Renderer {
     ctx.fillStyle = palette.ground;
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-    if (showTrails) {
-      this.trailRaster.update(world.pheromone);
-      this.trailContext.putImageData(this.trailImage, 0, 0);
+    const colonies = world instanceof Sandbox ? world.colonies : [{ id: 0, colorId: 0, world }];
+    const ids = new Set(colonies.map(c => c.id));
+    for (const id of this.trailLayers.keys()) if (!ids.has(id)) this.trailLayers.delete(id);
+    if (showTrails) for (const colony of colonies) {
+      let layer = this.trailLayers.get(colony.id);
+      if (!layer || layer.world !== colony.world) {
+        const raster = new TrailRaster(colony.id ? colonyPalette(colony.colorId) : this.colors);
+        const canvas = document.createElement('canvas');
+        canvas.width = raster.width; canvas.height = raster.height;
+        layer = { world: colony.world, raster, canvas, context: canvas.getContext('2d')!,
+          image: new ImageData(raster.pixels, raster.width, raster.height) };
+        this.trailLayers.set(colony.id, layer);
+      }
+      layer.raster.update(colony.world.pheromone);
+      layer.context.putImageData(layer.image, 0, 0);
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(this.trailCanvas, 0, 0, WIDTH, HEIGHT);
+      // Keep each draw source independent: reusing one mutable canvas can alias queued draws.
+      ctx.drawImage(layer.canvas, 0, 0, WIDTH, HEIGHT);
     }
 
     if (this.cachedTerrain !== world.terrain) {
@@ -80,23 +95,32 @@ export class Renderer {
       ctx.fillText(String(patch.amount), patch.x, patch.y + radius + 15);
     }
 
-    const nest = world.nest;
-    ctx.fillStyle = world.extinct ? this.colors.emptyNest : this.colors.nest;
-    ctx.beginPath(); ctx.arc(nest.x, nest.y, 18, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = palette.text; ctx.textAlign = 'center'; ctx.font = '11px monospace';
-    ctx.fillText(world.extinct ? 'empty nest' : 'nest', nest.x, nest.y + 34);
+    for (const colony of colonies) {
+      const state = colony.world;
+      const colors = colony.id ? colonyPalette(colony.colorId) : this.colors;
+      const nest = state.nest;
+      ctx.fillStyle = state.extinct ? colors.emptyNest : colors.nest;
+      ctx.beginPath(); ctx.arc(nest.x, nest.y, 18, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = palette.text; ctx.textAlign = 'center'; ctx.font = '11px monospace';
+      const name = colony.id ? `Colony ${colony.id}` : 'Colony';
+      const labelY = nest.y > HEIGHT - 44 ? nest.y - 28 : nest.y + 34;
+      ctx.fillStyle = colors.worker;
+      ctx.fillText(`${name}: ${state.ants.length} ants${state.extinct ? ' (extinct)' : ''}`,
+        Math.max(100, Math.min(WIDTH - 100, nest.x)), labelY);
 
-    for (const ant of world.ants) {
-      ctx.fillStyle = this.colors.worker;
-      ctx.beginPath(); ctx.arc(ant.x, ant.y, ant.carrying ? 2.3 : 1.8, 0, Math.PI * 2); ctx.fill();
-      if (ant.carrying) {
-        ctx.fillStyle = palette.food;
-        ctx.beginPath(); ctx.arc(ant.x, ant.y, 1, 0, Math.PI * 2); ctx.fill();
+      for (const ant of state.ants) {
+        ctx.fillStyle = colors.worker;
+        ctx.beginPath(); ctx.arc(ant.x, ant.y, ant.fighting ? 3 : ant.carrying ? 2.3 : 1.8, 0, Math.PI * 2); ctx.fill();
+        if (ant.carrying) {
+          ctx.fillStyle = palette.food;
+          ctx.beginPath(); ctx.arc(ant.x, ant.y, 1, 0, Math.PI * 2); ctx.fill();
+        }
       }
     }
     if (this.pointer) {
       const p = this.pointer;
-      ctx.strokeStyle = world.terrain.canStand(p.x, p.y, 18) && Math.hypot(p.x - nest.x, p.y - nest.y) >= 38 ? palette.cursor : palette.invalid;
+      const valid = this.placingNest && world instanceof Sandbox ? world.canPlaceNest(p.x, p.y) : world.terrain.canStand(p.x, p.y, 18) && colonies.every(c => Math.hypot(p.x - c.world.nest.x, p.y - c.world.nest.y) >= 38);
+      ctx.strokeStyle = valid ? palette.cursor : palette.invalid;
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, Math.PI * 2); ctx.stroke();
     }

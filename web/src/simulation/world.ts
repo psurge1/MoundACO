@@ -9,13 +9,19 @@ export { CELL, COLS, HEIGHT, ROWS, WIDTH } from './field';
 export const STEP = 1 / 30;
 export const MAX_POPULATION = 350;
 export const FOOD_PER_CLICK = 80;
+export const MAX_FOOD_PER_CLICK = 10000;
 const DIRECTIONS = 24;
+/** Shared implementation tuning, not colony-specific advantages. */
+export const RIVALRY = { retreatChance: 0.3, recruitment: 0.25, broodCost: 4, broodInterval: 8, maturation: 40, maturationFoodScale: 100, alarmHalfLife: 3, encounterRadius: 7, fightDuration: 1 };
+
 
 export interface Ant {
   x: number;
   y: number;
   angle: number;
   carrying: boolean;
+  fighting: boolean;
+  cargoAmount?: number;
   decisionIn: number;
   scout: boolean;
   returning: boolean;
@@ -29,12 +35,20 @@ export interface Ant {
   energy: number;
   resting: boolean;
   tripDistance: number;
+  alarmTarget: { x: number; y: number } | null;
+  recruitmentRank: number;
 }
 
 export interface Food { x: number; y: number; amount: number }
 
 export class World {
-  readonly nest = { x: WIDTH / 2, y: HEIGHT / 2 };
+  /** Remaining developmental seconds at the unfed maturation rate. */
+  readonly brood: number[] = [];
+  readonly alarm = new Float32Array(COLS * ROWS);
+  readonly alarms: { x: number; y: number; until: number }[] = [];
+  rivals: World[] = [];
+  recruitmentFraction = RIVALRY.recruitment;
+  retreatChance = RIVALRY.retreatChance;
   readonly random: Random;
   readonly ants: Ant[] = [];
   readonly food: Food[] = [];
@@ -62,7 +76,9 @@ export class World {
   private spawned = 0;
   private readonly failedDirections = new Float32Array(DIRECTIONS);
 
-  constructor(readonly seed = 1847, readonly initialPopulation = 48, readonly terrain = new Terrain(seed)) {
+  constructor(readonly seed = 1847, readonly initialPopulation = 48, readonly terrain = new Terrain(seed),
+    readonly nest = { x: WIDTH / 2, y: HEIGHT / 2 }, sharedFood?: Food[]) {
+    if (sharedFood) this.food = sharedFood;
     this.random = new Random(seed);
     for (let i = 0; i < Math.max(1, Math.min(MAX_POPULATION, Math.floor(initialPopulation))); i++) {
       this.spawn();
@@ -79,13 +95,14 @@ export class World {
     route.record(x, y, this.terrain, true);
     this.ants.push({
       x, y,
-      angle, carrying: false, decisionIn: this.random.next() * 0.18,
+      angle, carrying: false, fighting: false, decisionIn: this.random.next() * 0.18,
       scout, returning: false, searchTime: 0,
       searchLimit: this.searchBudget(scout), outboundAngle: angle,
       homeTarget: null,
       route, returnIndex: -1,
       trailExtended: false,
       energy: MAX_ENERGY, resting: false, tripDistance: 0,
+      alarmTarget: null, recruitmentRank: (this.spawned * 0.61803398875) % 1,
     });
   }
 
@@ -122,6 +139,7 @@ export class World {
   }
 
   private beginTrip(ant: Ant): void {
+    ant.alarmTarget = null;
     ant.returning = false;
     ant.homeTarget = null;
     ant.route = new RouteMemory(this.nest.x, this.nest.y);
@@ -137,7 +155,8 @@ export class World {
     ant.decisionIn = 0;
   }
 
-  addFood(x: number, y: number): boolean {
+  addFood(x: number, y: number, amount = FOOD_PER_CLICK): boolean {
+    if (!Number.isInteger(amount) || amount < 1 || amount > MAX_FOOD_PER_CLICK) return false;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
     x = Math.max(18, Math.min(WIDTH - 18, x));
     y = Math.max(18, Math.min(HEIGHT - 18, y));
@@ -145,16 +164,28 @@ export class World {
     if (Math.hypot(x - this.nest.x, y - this.nest.y) < 38) return false;
     if (!this.terrain.canStand(x, y, 18)) return false;
     const existing = this.food.find(p => Math.hypot(p.x - x, p.y - y) < 24);
-    if (existing) existing.amount += FOOD_PER_CLICK;
-    else if (this.food.length < 128) this.food.push({ x, y, amount: FOOD_PER_CLICK });
+    if (existing) existing.amount += amount;
+    else if (this.food.length < 128) this.food.push({ x, y, amount });
     else return false;
-    this.supplied += FOOD_PER_CLICK;
+    this.supplied += amount;
     return true;
   }
 
   private turn(ant: Ant): void {
     // Ants smell food only nearby; distant patches are discovered by exploration.
-    const nearby = this.food.find(p => p.amount > 0 && Math.hypot(p.x - ant.x, p.y - ant.y) < 65
+    if (ant.alarmTarget) {
+      const target = ant.alarmTarget;
+      if (Math.hypot(target.x - ant.x, target.y - ant.y) < 14) {
+        const enemy = this.rivals.flatMap(r => r.ants).find(a => Math.hypot(a.x - ant.x, a.y - ant.y) < 24
+          && this.terrain.lineClear(ant.x, ant.y, a.x, a.y));
+        if (enemy) { ant.angle = Math.atan2(enemy.y - ant.y, enemy.x - ant.x); return; }
+        ant.alarmTarget = null;
+      } else if (this.terrain.lineClear(ant.x, ant.y, target.x, target.y)) {
+        ant.angle = Math.atan2(target.y - ant.y, target.x - ant.x); return;
+      } else ant.alarmTarget = null;
+    }
+    const sources = [...this.food, ...this.rivals.filter(r => r.reserve > 0 || r.brood.length).map(r => ({ ...r.nest, amount: 1 }))];
+    const nearby = sources.find(p => p.amount > 0 && Math.hypot(p.x - ant.x, p.y - ant.y) < 65
       && this.terrain.lineClear(ant.x, ant.y, p.x, p.y));
     if (nearby) {
       ant.angle = Math.atan2(nearby.y - ant.y, nearby.x - ant.x);
@@ -206,22 +237,36 @@ export class World {
   step(): void {
     this.elapsed += STEP;
     const fade = Math.pow(0.5, STEP / this.halfLife);
+    const alarmFade = Math.pow(0.5, STEP / Math.min(RIVALRY.alarmHalfLife, this.halfLife / 2));
     for (let i = 0; i < this.pheromone.length; i++) {
       this.pheromone[i] *= fade;
+      this.alarm[i] *= alarmFade;
     }
     const failureFade = Math.pow(0.5, STEP / 40);
     for (let i = 0; i < this.failedDirections.length; i++) this.failedDirections[i] *= failureFade;
+    for (let i = this.alarms.length - 1; i >= 0; i--) if (this.alarms[i].until < this.elapsed) this.alarms.splice(i, 1);
     if (this.extinct) return;
 
     for (const ant of this.ants) {
       if (!this.energyEnabled) ant.energy = MAX_ENERGY;
+      if (ant.fighting) continue;
       if (ant.resting) {
         this.restSeconds += STEP;
         ant.energy = Math.min(MAX_ENERGY, ant.energy + ENERGY_RECOVERY_PER_SECOND * STEP);
         if (ant.energy >= MAX_ENERGY) this.beginTrip(ant);
         continue;
       }
-      if (!ant.carrying && !ant.returning) {
+      if (!ant.carrying && !ant.resting && ant.recruitmentRank < this.recruitmentFraction && !ant.alarmTarget) {
+        const signal = this.alarms.find(p => Math.hypot(p.x - ant.x, p.y - ant.y) < 65
+          && sampleField(this.alarm, p.x, p.y) > 0.15 && this.terrain.lineClear(ant.x, ant.y, p.x, p.y)
+          && this.rivals.some(r => r.ants.some(a => Math.hypot(a.x - p.x, a.y - p.y) < 24)));
+        if (signal) {
+          this.resumeForaging(ant);
+          ant.alarmTarget = { x: signal.x, y: signal.y };
+          ant.decisionIn = 0;
+        }
+      }
+      if (!ant.carrying && !ant.returning && !ant.alarmTarget) {
         ant.searchTime += STEP;
         if (!ant.scout && !ant.trailExtended && Math.hypot(ant.x - this.nest.x, ant.y - this.nest.y) > 60
           && sampleField(this.pheromone, ant.x, ant.y) > 0.2) {
@@ -285,7 +330,8 @@ export class World {
         if (Math.hypot(ant.x - this.nest.x, ant.y - this.nest.y) < 17) {
           if (ant.carrying) {
             ant.carrying = false;
-            this.reserve++;
+            this.reserve += ant.cargoAmount ?? 1;
+            ant.cargoAmount = undefined;
             this.delivered++;
             this.deliveryDistance += ant.tripDistance;
             const sector = this.directionIndex(ant.outboundAngle);
@@ -297,15 +343,25 @@ export class World {
             ant.resting = true;
           } else this.beginTrip(ant);
         }
-      } else {
+      } else if (!ant.alarmTarget) {
         const patch = this.food.find(p => p.amount > 0 && Math.hypot(p.x - ant.x, p.y - ant.y) < 14
           && this.terrain.lineClear(ant.x, ant.y, p.x, p.y));
         if (patch) {
           patch.amount--;
-          ant.carrying = true;
-          ant.homeTarget = null;
-          ant.route.record(ant.x, ant.y, this.terrain, true);
-          ant.returnIndex = ant.route.points.length - 1;
+          this.takeCargo(ant);
+        } else {
+          const rival = this.rivals.find(r => (r.reserve > 0 || r.brood.length > 0)
+            && Math.hypot(r.nest.x - ant.x, r.nest.y - ant.y) < 20
+            && this.terrain.lineClear(ant.x, ant.y, r.nest.x, r.nest.y));
+          if (rival) {
+            // One carried unit; any remaining stored food protects brood from raiding.
+            if (rival.reserve > 0) {
+              const amount = Math.min(1, rival.reserve);
+              rival.reserve -= amount;
+              ant.cargoAmount = amount;
+            } else { rival.brood.pop(); ant.cargoAmount = 1; }
+            this.takeCargo(ant);
+          }
         }
       }
     }
@@ -316,6 +372,18 @@ export class World {
   }
 
   private updatePopulation(): void {
+    // More stored food speeds existing brood smoothly, up to (but never beyond) 2×.
+    // No food still gives the baseline rate; progress is never reset by reserve changes.
+    const food = Math.max(0, this.reserve);
+    const maturationRate = 1 + food / (food + RIVALRY.maturationFoodScale);
+    for (let i = this.brood.length - 1; i >= 0; i--) {
+      this.brood[i] -= STEP * maturationRate;
+      if (this.brood[i] <= 0) {
+        if (!this.ants.length) { this.starvationTime = 0; this.deathClock = 0; }
+        this.brood.splice(i, 1); this.spawn(); this.births++;
+      }
+    }
+    if (!this.ants.length && !this.brood.length) { this.extinct = true; return; }
     const meal = Math.min(this.reserve, this.ants.length * 0.006 * STEP);
     this.reserve -= meal;
     this.consumed += meal;
@@ -328,32 +396,60 @@ export class World {
           this.deathClock -= 1.5;
           const count = Math.max(1, Math.ceil(this.ants.length * 0.03));
           const removed = this.ants.splice(-count);
-          this.lostCarried += removed.filter(a => a.carrying).length;
+          this.lostCarried += removed.reduce((sum, a) => sum + (a.carrying ? a.cargoAmount ?? 1 : 0), 0);
           this.deaths += removed.length;
-          if (!this.ants.length) this.extinct = true;
+
         }
       }
     } else {
       this.starvationTime = 0;
       this.deathClock = 0;
-      if (this.reserve > this.ants.length * 0.9 + 8 && this.ants.length < MAX_POPULATION) {
+      if (this.reserve > this.ants.length * 0.9 + 8 && this.ants.length + this.brood.length < MAX_POPULATION) {
         this.birthClock += STEP;
-        if (this.birthClock >= 3) {
-          this.birthClock -= 3;
-          this.reserve -= 4;
-          this.growthSpent += 4;
-          this.spawn();
-          this.births++;
+        if (this.birthClock >= RIVALRY.broodInterval) {
+          this.birthClock -= RIVALRY.broodInterval;
+          this.reserve -= RIVALRY.broodCost;
+          this.growthSpent += RIVALRY.broodCost;
+          this.brood.push(RIVALRY.maturation);
         }
       } else this.birthClock = 0;
     }
+  }
+
+  /** Preserve the physically explored return route when an empty returner changes tasks. */
+  resumeForaging(ant: Ant): void {
+    if ((ant.returning || ant.carrying) && ant.returnIndex >= 0) {
+      const points = ant.route.points.slice(0, Math.max(1, ant.returnIndex + 1));
+      ant.route = new RouteMemory(this.nest.x, this.nest.y);
+      for (const p of points.slice(1)) ant.route.record(p.x, p.y, this.terrain, true);
+    }
+    ant.route.record(ant.x, ant.y, this.terrain, true);
+    ant.returning = false;
+    ant.carrying = false;
+    ant.cargoAmount = undefined;
+    ant.resting = false;
+    ant.homeTarget = null;
+    ant.alarmTarget = null;
+    ant.searchTime = 0;
+  }
+
+  takeCargo(ant: Ant): void {
+    const amount = ant.cargoAmount;
+    if (ant.returning) this.resumeForaging(ant);
+    ant.cargoAmount = amount;
+    ant.carrying = true;
+    ant.resting = false;
+    ant.alarmTarget = null;
+    ant.homeTarget = null;
+    ant.route.record(ant.x, ant.y, this.terrain, true);
+    ant.returnIndex = ant.route.points.length - 1;
   }
 
   get status(): 'exploring' | 'foraging' | 'growing' | 'low food' | 'starving' | 'extinct' {
     if (this.extinct) return 'extinct';
     if (this.reserve <= 0) return 'starving';
     if (this.reserve < this.ants.length * 0.15) return 'low food';
-    if (this.reserve > this.ants.length * 0.9 + 8 && this.ants.length < MAX_POPULATION) return 'growing';
+    if (this.reserve > this.ants.length * 0.9 + 8 && this.ants.length + this.brood.length < MAX_POPULATION) return 'growing';
     return this.delivered ? 'foraging' : 'exploring';
   }
 }
